@@ -1,0 +1,67 @@
+# Recipe Composition & Management System
+#
+#   cp .env.example .env      # then set JWT_SECRET and POSTGRES_PASSWORD
+#   docker compose up --build
+#
+# Frontend: http://localhost:8080   API: http://localhost:8080/api   DB: localhost:5432
+
+name: recipe-management-system
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-recipes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:-recipes}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-recipes}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recipes}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (see .env.example)}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      RUN_SEED: ${RUN_SEED:-true}
+      SEED_FORCE: ${SEED_FORCE:-false}
+      SEED_DEMO_EMAIL: ${SEED_DEMO_EMAIL:-demo@recipes.local}
+      SEED_DEMO_PASSWORD: ${SEED_DEMO_PASSWORD:-Demo@12345}
+    # Not published on the host: the API is reached through nginx (http://localhost:8080/api).
+    # The app trusts exactly one proxy hop (nginx) for client IPs, so exposing it directly would
+    # let clients spoof X-Forwarded-For and bypass the login rate limit.
+    expose:
+      - '4000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 40s
+      retries: 6
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '${FRONTEND_PORT:-8080}:80'
+
+volumes:
+  postgres-data:

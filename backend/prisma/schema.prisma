@@ -1,0 +1,103 @@
+// Recipe Composition & Management System — database schema.
+//
+// Constraints that Prisma cannot express declaratively (CHECK constraints and
+// case-insensitive unique indexes) are added by hand in
+// prisma/migrations/20261008000000_init/migration.sql and documented in ARCHITECTURE.md.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  recipes     Recipe[]
+  ingredients Ingredient[]
+
+  @@map("users")
+}
+
+/// Shared ingredient catalogue. Ingredients are global so that recipes reference
+/// the same "Tomato" row instead of each copying it.
+model Ingredient {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  /// Unit suggested when the ingredient is added to a recipe (e.g. "g").
+  defaultUnit String?  @map("default_unit")
+  /// Identifier from the provided dataset (e.g. "ing_tomato"); null for user-created rows.
+  externalId  String?  @unique @map("external_id")
+  /// Creator; only the creator may edit/delete. Null for dataset/system ingredients.
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  createdBy  User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  components RecipeComponent[]
+
+  @@index([createdById])
+  @@map("ingredients")
+}
+
+model Recipe {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  name        String
+  description String?
+  category    String?
+  /// Number of servings one batch of this recipe yields.
+  servings    Int
+  /// Identifier from the provided dataset (e.g. "recipe_tomato_sauce").
+  externalId  String?  @map("external_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Components this recipe is made of.
+  components RecipeComponent[] @relation("ParentRecipe")
+  /// Components (in other recipes) that use this recipe.
+  usedIn     RecipeComponent[] @relation("ChildRecipe")
+
+  @@unique([userId, externalId])
+  @@index([userId, updatedAt])
+  @@map("recipes")
+}
+
+/// One line of a recipe. Polymorphic: exactly one of ingredientId / childRecipeId
+/// is set (enforced by the CHECK constraint "recipe_components_exactly_one_target").
+model RecipeComponent {
+  id            String   @id @default(uuid()) @db.Uuid
+  recipeId      String   @map("recipe_id") @db.Uuid
+  ingredientId  String?  @map("ingredient_id") @db.Uuid
+  childRecipeId String?  @map("child_recipe_id") @db.Uuid
+  quantity      Float
+  /// Ingredient lines: a measurement unit (g, ml, piece, ...).
+  /// Recipe lines: "batch" (multiples of the whole recipe) or "serving".
+  unit          String
+  position      Int
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  recipe      Recipe      @relation("ParentRecipe", fields: [recipeId], references: [id], onDelete: Cascade)
+  ingredient  Ingredient? @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+  // NoAction (checked at end of statement) rather than Restrict so that deleting a
+  // user can cascade through all of their recipes in a single statement, while
+  // deleting a single referenced recipe is still rejected.
+  childRecipe Recipe?     @relation("ChildRecipe", fields: [childRecipeId], references: [id], onDelete: NoAction)
+
+  @@index([recipeId, position])
+  @@index([ingredientId])
+  @@index([childRecipeId])
+  @@map("recipe_components")
+}
